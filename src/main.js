@@ -20,10 +20,10 @@ const DESPAWN_Z = 6;
 const PLAYER_Z = 0;
 
 const STAGES = [
-  { name: '① 입암산 발원지', desc: '여기는 입암산, 황룡강이 시작되는 곳이에요', dist: 0, speed: 9, water: [0x2fbfae, 0x0e5c52], fog: 0x123a33, spawnEvery: 1.35 },
-  { name: '② 장성호', desc: '계곡물이 모여 넓은 저수지를 이뤄요', dist: 260, speed: 11, water: [0x2b9fc9, 0x0b4763], fog: 0x0e2c3a, spawnEvery: 1.15 },
-  { name: '③ 읍내 구간', desc: '장성 읍내를 가로지르는 도심 하천이에요', dist: 620, speed: 13, water: [0x4a8f7c, 0x1c4a3f], fog: 0x1c2620, spawnEvery: 0.95 },
-  { name: '④ 영산강 합류부', desc: '가장 넓은 강, 곧 보스가 나타나요!', dist: 1050, speed: 15.5, water: [0xd98c3b, 0x7a3f1e], fog: 0x3a2416, spawnEvery: 0.8 },
+  { name: '① 입암산 발원지', desc: '여기는 입암산, 황룡강이 시작되는 곳이에요', dist: 0, speed: 12, water: [0x5fe0cc, 0x1fa08c], fog: 0xbfe8dc, sky: 0xcdf2e6, spawnEvery: 1.35 },
+  { name: '② 장성호', desc: '계곡물이 모여 넓은 저수지를 이뤄요', dist: 260, speed: 14.5, water: [0x66c7ea, 0x2a8fc0], fog: 0xc9eaf5, sky: 0xd6f0fa, spawnEvery: 1.15 },
+  { name: '③ 읍내 구간', desc: '장성 읍내를 가로지르는 도심 하천이에요', dist: 620, speed: 17, water: [0x7fd0b8, 0x3a9f88], fog: 0xdcefe2, sky: 0xe6f4ea, spawnEvery: 0.95 },
+  { name: '④ 영산강 합류부', desc: '가장 넓은 강, 곧 보스가 나타나요!', dist: 1050, speed: 19.5, water: [0xffc178, 0xd98c3b], fog: 0xffe3bd, sky: 0xffedd0, spawnEvery: 0.8 },
 ];
 const BOSS_TRIGGER_DIST = 1450;
 const BOSS_HP = 6;
@@ -110,18 +110,19 @@ function initRenderer() {
 
 function initScene() {
   scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(STAGES[0].fog, 18, 62);
-  scene.background = new THREE.Color(STAGES[0].fog);
+  scene.fog = new THREE.Fog(STAGES[0].fog, 30, 100);
+  scene.background = new THREE.Color(STAGES[0].sky);
 
   camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 200);
   camera.position.set(0, 4.2, 8.5);
   camera.lookAt(0, 1.2, -6);
 
-  const hemi = new THREE.HemisphereLight(0xdfffee, 0x0a1f1a, 1.1);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x8fae9c, 1.7);
   scene.add(hemi);
-  const dir = new THREE.DirectionalLight(0xfff2d8, 1.2);
+  const dir = new THREE.DirectionalLight(0xfff6e0, 1.9);
   dir.position.set(6, 10, 4);
   scene.add(dir);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
   createWater();
   createBanks();
@@ -179,7 +180,7 @@ function createWater() {
 
 function createBanks() {
   const bankGeo = new THREE.BoxGeometry(6, 1.4, 140);
-  const matL = new THREE.MeshStandardMaterial({ color: 0x2c5c3f, roughness: 1 });
+  const matL = new THREE.MeshStandardMaterial({ color: 0x6bb87e, roughness: 1 });
   const matR = matL.clone();
   bankL = new THREE.Mesh(bankGeo, matL);
   bankL.position.set(-7.3, -0.7, -25);
@@ -207,7 +208,7 @@ async function loadAssets() {
 
 function targetSizeFor(key) {
   switch (key) {
-    case 'otter': return 1.5;
+    case 'otter': return 1.05;
     case 'clam': return 0.42;
     case 'boss': return 2.6;
     case 'trash': return 0.55;
@@ -237,6 +238,7 @@ function normalizeModel(root, targetSize, axis = 'max') {
 function buildPlayer() {
   playerRig = new THREE.Group();
   playerModel = assets.otter.clone(true);
+  playerModel.rotation.y = Math.PI;
   playerRig.add(playerModel);
   playerRig.position.set(LANES[1], 0, PLAYER_Z);
   scene.add(playerRig);
@@ -342,7 +344,7 @@ function doJump() {
 function doSlide() {
   if (state.jumping || state.sliding) return;
   state.sliding = true;
-  state.slideTimer = 0.55;
+  state.slideTimer = 0.7;
 }
 
 function doAttack() {
@@ -508,7 +510,7 @@ function applyStageVisuals(stage) {
   waterUniforms.uShallow.value.setHex(stage.water[0]);
   waterUniforms.uDeep.value.setHex(stage.water[1]);
   scene.fog.color.setHex(stage.fog);
-  scene.background.setHex(stage.fog);
+  scene.background.setHex(stage.sky);
   state.speed = stage.speed;
 }
 
@@ -541,7 +543,19 @@ function winGame() {
 }
 
 // ---------- Update loop ----------
+let lastW = 0, lastH = 0;
+function ensureSize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) {
+    lastW = w; lastH = h;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+}
+
 function tick() {
+  ensureSize();
   const dt = Math.min(clock.getDelta(), 0.05);
   waterUniforms.uTime.value += dt;
   pollGamepad();
@@ -656,11 +670,10 @@ function renderHearts() {
 
 function updatePlayerVisual(dt) {
   playerRig.position.y = state.y;
-  let targetScaleY = 1;
-  let targetY = 0;
-  if (state.sliding) { targetScaleY = 0.5; targetY = -0.15; }
-  playerModel.scale.y += (targetScaleY - playerModel.scale.y) * Math.min(1, dt * 12);
+  const targetY = state.sliding ? -0.85 : 0;
+  const targetTilt = state.sliding ? -0.45 : 0;
   playerModel.position.y += (targetY - playerModel.position.y) * Math.min(1, dt * 12);
+  playerModel.rotation.x += (targetTilt - playerModel.rotation.x) * Math.min(1, dt * 12);
 
   if (state.invuln > 0) {
     playerModel.visible = Math.floor(state.invuln * 14) % 2 === 0;
