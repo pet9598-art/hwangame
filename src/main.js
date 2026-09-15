@@ -196,7 +196,8 @@ async function loadAssets() {
     loader.load(encodeURI(path), (gltf) => {
       const root = gltf.scene;
       stripSkinning(root);
-      normalizeModel(root, targetSizeFor(key), key === 'otter' || key === 'boss' ? 'y' : 'max');
+      if (key === 'clam') root.rotation.z = Math.PI / 2;
+      normalizeModel(root, targetSizeFor(key), key === 'otter' || key === 'boss' || key === 'clam' ? 'y' : 'max');
       assets[key] = root;
       resolve();
     }, undefined, (err) => {
@@ -210,13 +211,13 @@ async function loadAssets() {
 function targetSizeFor(key) {
   switch (key) {
     case 'otter': return 1.05;
-    case 'clam': return 0.42;
+    case 'clam': return 1.05;
     case 'boss': return 2.6;
     case 'trash': return 0.8;
     case 'rock': return 1.7;
-    case 'sodacan': return 0.75;
+    case 'sodacan': return 1.1;
     case 'log': return 2.6;
-    case 'poop': return 0.75;
+    case 'poop': return 1.1;
     case 'nature': return 3.4;
     case 'tree': return 2.8;
     default: return 1.0;
@@ -453,13 +454,17 @@ function spawnClam(lane) {
 }
 
 function spawnScenery() {
-  const key = Math.random() < 0.5 ? 'tree' : 'nature';
-  const side = Math.random() < 0.5 ? -1 : 1;
-  const mesh = cloneAsset(key);
-  mesh.position.set(side * (6.4 + Math.random() * 2.2), 0, SPAWN_Z - Math.random() * 20);
-  mesh.rotation.y = Math.random() * Math.PI * 2;
-  scene.add(mesh);
-  entities.push({ mesh, type: 'scenery', destructible: false, kind: 'scenery', isObstacle: false });
+  for (const side of [-1, 1]) {
+    const roll = Math.random();
+    const key = roll < 0.4 ? 'tree' : roll < 0.75 ? 'nature' : 'rock';
+    const mesh = cloneAsset(key);
+    const jitter = 0.7 + Math.random() * 0.7;
+    mesh.scale.multiplyScalar(jitter);
+    mesh.position.set(side * (5.0 + Math.random() * 4.6), 0, SPAWN_Z - Math.random() * 22);
+    mesh.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(mesh);
+    entities.push({ mesh, type: 'scenery', destructible: false, kind: 'scenery', isObstacle: false });
+  }
 }
 
 const BOSS_Z = -17;
@@ -624,7 +629,7 @@ function updateGame(dt) {
     }
   }
   state.sceneryTimer -= dt;
-  if (state.sceneryTimer <= 0) { spawnScenery(); state.sceneryTimer = 0.9; }
+  if (state.sceneryTimer <= 0) { spawnScenery(); state.sceneryTimer = 0.5; }
 
   // boss behavior
   if (state.phase === 'boss' && state.boss) {
