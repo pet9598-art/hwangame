@@ -195,6 +195,7 @@ async function loadAssets() {
   await Promise.all(entries.map(([key, path]) => new Promise((resolve) => {
     loader.load(encodeURI(path), (gltf) => {
       const root = gltf.scene;
+      stripSkinning(root);
       normalizeModel(root, targetSizeFor(key), key === 'otter' || key === 'boss' ? 'y' : 'max');
       assets[key] = root;
       resolve();
@@ -211,14 +212,28 @@ function targetSizeFor(key) {
     case 'otter': return 1.05;
     case 'clam': return 0.42;
     case 'boss': return 2.6;
-    case 'trash': return 0.55;
-    case 'rock': return 1.3;
-    case 'sodacan': return 0.5;
-    case 'log': return 2.0;
-    case 'poop': return 0.5;
+    case 'trash': return 0.8;
+    case 'rock': return 1.7;
+    case 'sodacan': return 0.75;
+    case 'log': return 2.6;
+    case 'poop': return 0.75;
     case 'nature': return 3.4;
     case 'tree': return 2.8;
     default: return 1.0;
+  }
+}
+
+function stripSkinning(root) {
+  const skinned = [];
+  root.traverse((o) => { if (o.isSkinnedMesh) skinned.push(o); });
+  for (const o of skinned) {
+    const plain = new THREE.Mesh(o.geometry, o.material);
+    plain.position.copy(o.position);
+    plain.rotation.copy(o.rotation);
+    plain.scale.copy(o.scale);
+    plain.name = o.name;
+    o.parent.add(plain);
+    o.parent.remove(o);
   }
 }
 
@@ -622,7 +637,7 @@ function updateGame(dt) {
   for (let i = entities.length - 1; i >= 0; i--) {
     const ent = entities[i];
     ent.mesh.position.z += state.speed * dt;
-    if (ent.type !== 'scenery') ent.mesh.rotation.y += dt * 0.6;
+    if (ent.type !== 'scenery' && ent.kind !== 'bridge') ent.mesh.rotation.y += dt * 0.6;
 
     if (ent.mesh.position.z > DESPAWN_Z) {
       scene.remove(ent.mesh);
