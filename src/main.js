@@ -26,7 +26,8 @@ const STAGES = [
   { name: '④ 영산강 합류부', desc: '가장 넓은 강, 곧 보스가 나타나요!', dist: 1050, speed: 19.5, water: [0xffc178, 0xd98c3b], fog: 0xffe3bd, sky: 0xffedd0, spawnEvery: 0.8 },
 ];
 const BOSS_TRIGGER_DIST = 1450;
-const BOSS_HP = 6;
+const BOSS_HP = 10;
+const PROJECTILE_SPEED = 34;
 
 const state = {
   phase: 'start', // start | playing | boss | win | over
@@ -46,11 +47,15 @@ const state = {
   stageIndex: 0,
   spawnTimer: 0,
   sceneryTimer: 0,
+  clamTimer: 0,
+  streakTimer: 0,
   bossHp: BOSS_HP,
   boss: null,
   bossAttackTimer: 0,
+  bossT: 0,
   trashCleared: 0,
   speed: STAGES[0].speed,
+  shake: 0,
 };
 
 let renderer, scene, camera, clock;
@@ -58,6 +63,7 @@ let waterMat, waterUniforms;
 let playerRig, playerModel;
 let bankL, bankR;
 const entities = []; // {mesh, x, type, destructible, kind}
+const projectiles = []; // {mesh} — player-fired clams
 const assets = {};
 
 const dom = {
@@ -366,26 +372,50 @@ function doSlide() {
 function doAttack() {
   if (state.attackCooldown > 0 || state.clams <= 0) return;
   state.clams -= 1;
-  state.attackCooldown = 0.4;
-  flashAttack();
+  state.attackCooldown = 0.22;
 
-  let target = null;
-  let bestZ = Infinity;
-  for (const ent of entities) {
-    if (!ent.destructible) continue;
-    if (ent.mesh.position.z > 3 || ent.mesh.position.z < -14) continue;
-    if (ent.mesh.position.z < bestZ) { bestZ = ent.mesh.position.z; target = ent; }
-  }
-  if (target) {
-    scene.remove(target.mesh);
-    entities.splice(entities.indexOf(target), 1);
-    if (target.kind === 'trash' || target.kind === 'sodacan' || target.kind === 'poop') {
-      state.trashCleared += 1;
-      state.score += 15;
+  const mesh = cloneAsset('clam');
+  mesh.scale.multiplyScalar(0.55);
+  mesh.position.set(playerRig.position.x, 0.6 + state.y, PLAYER_Z - 1.1);
+  scene.add(mesh);
+  projectiles.push({ mesh });
+}
+
+function updateProjectiles(dt) {
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    p.mesh.position.z -= PROJECTILE_SPEED * dt;
+    p.mesh.rotation.x += dt * 18;
+
+    let hit = false;
+    for (let j = entities.length - 1; j >= 0; j--) {
+      const ent = entities[j];
+      if (!ent.destructible) continue;
+      if (Math.abs(ent.mesh.position.z - p.mesh.position.z) < 1.0 && Math.abs(ent.mesh.position.x - p.mesh.position.x) < 1.0) {
+        scene.remove(ent.mesh);
+        entities.splice(j, 1);
+        if (ent.kind === 'trash' || ent.kind === 'sodacan' || ent.kind === 'poop') {
+          state.trashCleared += 1;
+          state.score += 15;
+        }
+        hit = true;
+        break;
+      }
     }
-  } else if (state.phase === 'boss' && state.boss) {
-    state.bossHp -= 1;
-    if (state.bossHp <= 0) winGame();
+    if (!hit && state.phase === 'boss' && state.boss && p.mesh.position.z <= BOSS_Z + 1.8) {
+      state.bossHp -= 1;
+      hit = true;
+      if (state.bossHp <= 0) winGame();
+    }
+
+    if (hit) {
+      flashAttack();
+      scene.remove(p.mesh);
+      projectiles.splice(i, 1);
+    } else if (p.mesh.position.z < SPAWN_Z - 5) {
+      scene.remove(p.mesh);
+      projectiles.splice(i, 1);
+    }
   }
 }
 
@@ -411,8 +441,6 @@ function spawnObstacleWave() {
   else if (roll < 0.78) kind = 'poop';
   else kind = 'bridge';
   spawnObstacle(kind, lane);
-
-  if (Math.random() < 0.55) spawnClam((lane + 1 + (Math.random() < 0.5 ? 0 : 1)) % 3);
 }
 
 function spawnObstacle(kind, lane) {
@@ -478,12 +506,24 @@ function spawnBoss() {
   dom.bossBar.classList.add('show');
 }
 
-function spawnTrashProjectile() {
-  const lane = Math.floor(Math.random() * 3);
+function spawnTrashProjectile(lane) {
+  if (lane === undefined) lane = Math.floor(Math.random() * 3);
   const mesh = cloneAsset('trash');
-  mesh.position.set(LANES[lane], 0.4, BOSS_Z + 2);
+  const originX = state.boss ? state.boss.position.x : LANES[lane];
+  mesh.position.set(originX, 0.4, BOSS_Z + 2);
   scene.add(mesh);
-  entities.push({ mesh, type: 'low', destructible: true, kind: 'trash', isObstacle: true, isBossProjectile: true });
+  entities.push({ mesh, type: 'low', destructible: true, kind: 'trash', isObstacle: true, isBossProjectile: true, targetX: LANES[lane] });
+}
+
+function spawnStreak() {
+  const geo = new THREE.PlaneGeometry(0.1, 2.4);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  const divider = Math.random() < 0.5 ? -1.1 : 1.1;
+  mesh.position.set(divider, 0.04, SPAWN_Z);
+  scene.add(mesh);
+  entities.push({ mesh, type: 'streak', destructible: false, kind: 'streak', isObstacle: false, speedMul: 1.6 });
 }
 
 // ---------- Game flow ----------
@@ -503,12 +543,15 @@ function startGame() {
 function resetGame() {
   for (const ent of entities) scene.remove(ent.mesh);
   entities.length = 0;
+  for (const p of projectiles) scene.remove(p.mesh);
+  projectiles.length = 0;
   if (state.boss) { scene.remove(state.boss); state.boss = null; }
   Object.assign(state, {
     phase: 'playing', distance: 0, score: 0, clams: 0, lives: 3, invuln: 0,
     lane: 1, y: 0, vy: 0, jumping: false, sliding: false, slideTimer: 0,
     attackCooldown: 0, stageIndex: 0, spawnTimer: 0, sceneryTimer: 0,
-    bossHp: BOSS_HP, bossAttackTimer: 0, trashCleared: 0, speed: STAGES[0].speed,
+    clamTimer: 0, streakTimer: 0, shake: 0,
+    bossHp: BOSS_HP, bossAttackTimer: 0, bossT: 0, trashCleared: 0, speed: STAGES[0].speed,
   });
   playerRig.position.set(LANES[1], 0, PLAYER_Z);
   dom.bossBar.classList.remove('show');
@@ -538,6 +581,7 @@ function loseLife(reason) {
   if (state.invuln > 0) return;
   state.lives -= 1;
   state.invuln = 1.5;
+  state.shake = 0.35;
   if (state.lives <= 0) {
     gameOver(reason);
   }
@@ -631,18 +675,43 @@ function updateGame(dt) {
   state.sceneryTimer -= dt;
   if (state.sceneryTimer <= 0) { spawnScenery(); state.sceneryTimer = 0.5; }
 
-  // boss behavior
+  if (state.phase === 'playing' || state.phase === 'boss') {
+    state.clamTimer -= dt;
+    if (state.clamTimer <= 0) {
+      spawnClam(Math.floor(Math.random() * 3));
+      state.clamTimer = 0.45 + Math.random() * 0.35;
+    }
+  }
+
+  state.streakTimer -= dt;
+  if (state.streakTimer <= 0) { spawnStreak(); state.streakTimer = 0.1; }
+
+  // boss behavior — weaves side to side while flinging trash faster
   if (state.phase === 'boss' && state.boss) {
+    state.bossT += dt;
+    state.boss.position.x = Math.sin(state.bossT * 1.1) * 2.8;
     state.bossAttackTimer -= dt;
-    if (state.bossAttackTimer <= 0) { spawnTrashProjectile(); state.bossAttackTimer = 2.2; }
+    if (state.bossAttackTimer <= 0) {
+      const laneA = Math.floor(Math.random() * 3);
+      let laneB = Math.floor(Math.random() * 3);
+      if (laneB === laneA) laneB = (laneB + 1) % 3;
+      spawnTrashProjectile(laneA);
+      spawnTrashProjectile(laneB);
+      state.bossAttackTimer = 1.1;
+    }
     dom.bossFill.style.width = Math.max(0, (state.bossHp / BOSS_HP) * 100) + '%';
   }
+
+  updateProjectiles(dt);
 
   // move entities & collisions
   for (let i = entities.length - 1; i >= 0; i--) {
     const ent = entities[i];
-    ent.mesh.position.z += state.speed * dt;
-    if (ent.type !== 'scenery' && ent.kind !== 'bridge') ent.mesh.rotation.y += dt * 0.6;
+    ent.mesh.position.z += state.speed * (ent.speedMul || 1) * dt;
+    if (ent.type !== 'scenery' && ent.kind !== 'bridge' && ent.kind !== 'streak') ent.mesh.rotation.y += dt * 0.6;
+    if (ent.targetX !== undefined) {
+      ent.mesh.position.x += (ent.targetX - ent.mesh.position.x) * Math.min(1, dt * 2.5);
+    }
 
     if (ent.mesh.position.z > DESPAWN_Z) {
       scene.remove(ent.mesh);
@@ -704,6 +773,19 @@ function updatePlayerVisual(dt) {
   camera.position.x += (playerRig.position.x * 0.6 - (camera.position.x - 0)) * Math.min(1, dt * 4);
   camera.position.y = 4.2 + state.y * 0.2;
   camera.lookAt(playerRig.position.x * 0.4, 1.1 + state.y * 0.3, -6);
+
+  if (state.shake > 0) {
+    state.shake = Math.max(0, state.shake - dt * 1.8);
+    const s = state.shake * 0.4;
+    camera.position.x += (Math.random() - 0.5) * s;
+    camera.position.y += (Math.random() - 0.5) * s;
+  }
+
+  const targetFov = 62 + Math.min(13, Math.max(0, state.speed - 12));
+  if (Math.abs(camera.fov - targetFov) > 0.05) {
+    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 2.5);
+    camera.updateProjectionMatrix();
+  }
 }
 
 function onResize() {
