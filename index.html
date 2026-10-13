@@ -93,6 +93,51 @@
   #tLeft{left:18px;bottom:96px;} #tRight{left:96px;bottom:96px;}
   #tJump{right:96px;bottom:150px;} #tSlide{right:96px;bottom:40px;} #tAttack{right:18px;bottom:96px;background:rgba(217,140,59,.35);}
 
+  /* mode select */
+  .mode-select{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:520px;width:100%;}
+  .mode-btn{background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.18);border-radius:12px;padding:10px 12px;
+    color:var(--paper);cursor:pointer;text-align:center;font-family:inherit;}
+  .mode-btn b{display:block;font-size:1rem;margin-bottom:3px;}
+  .mode-btn span{font-size:.75rem;color:#bfe4d8;}
+  .mode-btn.selected{border-color:var(--warm);background:rgba(217,140,59,.18);}
+  .opt{font-size:.8rem;color:#bfe4d8;display:flex;align-items:center;gap:6px;cursor:pointer;}
+  .btn-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center;}
+
+  /* surge meter */
+  .surge-track{height:8px;border-radius:6px;background:rgba(255,255,255,.15);overflow:hidden;margin-top:4px;}
+  .surge-fill{height:100%;width:12%;background:linear-gradient(90deg,#a87a45,#6b4320);transition:width .15s;}
+  #surgeWrap .hud-label{margin-top:6px;color:#e2c49c;}
+
+  #surgeEdge{position:absolute;left:0;right:0;bottom:0;height:34%;pointer-events:none;opacity:0;
+    background:linear-gradient(0deg, rgba(90,58,25,.75), rgba(90,58,25,0));transition:opacity .2s;}
+  #surgeEdge::after{content:'⚠ 흙탕물이 다가와요!';position:absolute;left:50%;bottom:18%;transform:translateX(-50%);
+    font-weight:800;font-size:1.15rem;color:#ffe9c6;text-shadow:0 2px 6px rgba(0,0,0,.6);opacity:0;}
+  #surgeEdge.warn::after{animation:blink .5s steps(2) infinite;}
+  @keyframes blink{0%{opacity:1}100%{opacity:0}}
+
+  #dangerVignette{position:absolute;inset:0;pointer-events:none;opacity:0;
+    box-shadow:inset 0 0 120px 30px rgba(196,40,30,.75);}
+  #dangerVignette.on{animation:beat 1s ease-in-out infinite;}
+  @keyframes beat{0%,100%{opacity:.25}15%{opacity:.9}30%{opacity:.35}45%{opacity:.8}}
+
+  #popLayer{position:absolute;left:0;right:0;top:26%;height:0;pointer-events:none;}
+  .pop{position:absolute;left:50%;transform:translateX(-50%);font-weight:800;font-size:1.5rem;white-space:nowrap;
+    color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.55);animation:popUp .95s ease-out forwards;}
+  .pop.near{color:#ffe36e;}
+  .pop.hit{color:#ff7a5c;font-size:2rem;}
+  .pop.clean{color:#9ff0c9;font-size:1.1rem;}
+  .pop.boss{color:#ff9a7a;font-size:2.2rem;}
+  @keyframes popUp{0%{opacity:0;margin-top:12px;transform:translateX(-50%) scale(.7)}
+    15%{opacity:1;transform:translateX(-50%) scale(1.12)}100%{opacity:0;margin-top:-46px;transform:translateX(-50%) scale(1)}}
+
+  .combo-badge{margin-top:6px;font-size:.78rem;font-weight:700;color:#04211c;background:#ffcf6e;border-radius:999px;
+    padding:2px 10px;opacity:0;transition:opacity .2s;display:inline-block;}
+  .combo-badge.show{opacity:1;}
+  #muteBtn{pointer-events:auto;margin-top:8px;font-size:.72rem;padding:4px 10px;}
+  #muteBtn.off{opacity:.6;}
+  #stageBanner .st-fact{font-size:.82rem;color:#ffe9c6;margin-top:8px;max-width:340px;
+    border-top:1px solid rgba(255,255,255,.18);padding-top:8px;}
+
   @media (max-width:520px){
     h1{font-size:1.5rem;} .lead{font-size:.82rem;}
     .controls-grid{grid-template-columns:1fr;}
@@ -114,16 +159,25 @@
       <div class="gauge-wrap">
         <div class="hud-label">속도 게이지</div>
         <div class="gauge-track"><div class="gauge-fill" id="speedFill"></div></div>
+        <div id="surgeWrap">
+          <div class="hud-label">흙탕물 접근도</div>
+          <div class="surge-track"><div class="surge-fill" id="surgeFill"></div></div>
+        </div>
       </div>
       <div class="hud-box" style="text-align:right;">
         <div class="hud-label">이동 거리</div>
         <div class="hud-value"><span id="distVal">0</span>m</div>
         <div class="clam-count" style="justify-content:flex-end;"><span class="clam-dot"></span><span id="clamVal">0</span></div>
+        <div class="combo-badge" id="comboBadge"></div><br>
+        <button class="ghost" id="muteBtn">♪ 소리 켜짐</button>
       </div>
     </div>
   </div>
 
-  <div id="stageBanner"><div class="st-name" id="stName"></div><div class="st-desc" id="stDesc"></div></div>
+  <div id="surgeEdge"></div>
+  <div id="dangerVignette"></div>
+  <div id="popLayer"></div>
+  <div id="stageBanner"><div class="st-name" id="stName"></div><div class="st-desc" id="stDesc"></div><div class="st-fact" id="stFact"></div></div>
   <div id="bossBar"><div class="hud-label">보스 - 쓰레기봉투</div><div class="boss-track"><div class="boss-fill" id="bossFill"></div></div></div>
   <div id="attackFlash"></div>
 
@@ -137,13 +191,18 @@
 
   <!-- START -->
   <div class="overlay" id="startScreen">
-    <span class="title-badge">Prototype · v0.1</span>
+    <span class="title-badge">Prototype · v0.2</span>
     <h1>황룡강 수달 헤엄 러너</h1>
     <p class="lead">입암산 발원지에서 영산강까지, 강물을 따라 헤엄치며 장애물을 피하세요. 조개를 모아 쓰레기와 보스를 공격할 수 있어요!</p>
     <div class="controls-grid">
-      <div class="ctrl-card"><b>PC 키보드</b>← → / A D : 좌우 이동<br>↑ / W / Space : 점프<br>↓ / S : 잠수(슬라이딩)<br>F : 공격(조개 소모)</div>
+      <div class="ctrl-card"><b>PC 키보드</b>← → / A D : 좌우 이동<br>↑ / W / Space : 점프<br>↓ / S : 잠수(슬라이딩)<br>F : 공격(조개 소모)<br>M : 소리 켜기/끄기</div>
       <div class="ctrl-card"><b>게임패드</b>D패드·스틱 : 이동<br>A : 점프 &nbsp; B : 잠수<br>X / RB : 공격<br><span id="padStatus">연결된 패드 없음</span></div>
     </div>
+    <div class="mode-select">
+      <button class="mode-btn" data-mode="easy"><b>느긋하게</b><span>하트 5개 · 흙탕물 없음</span></button>
+      <button class="mode-btn selected" data-mode="challenge"><b>도전!</b><span>하트 3개 · 흙탕물이 쫓아와요</span></button>
+    </div>
+    <label class="opt"><input type="checkbox" id="motionOpt" checked> 화면 흔들림·속도 효과 (어지러우면 끄세요)</label>
     <button class="primary" id="startBtn">불러오는 중...</button>
   </div>
 
@@ -157,7 +216,7 @@
       <div class="stat-line"><span>이동 거리</span><b id="winDist">0m</b></div>
       <div class="stat-line"><span>치운 쓰레기</span><b id="winTrash">0개</b></div>
     </div>
-    <button class="primary" id="restartBtnWin">다시 헤엄치기</button>
+    <div class="btn-row"><button class="primary" id="restartBtnWin">다시 헤엄치기</button><button class="ghost" id="homeBtnWin">처음 화면 (모드 바꾸기)</button></div>
   </div>
 
   <!-- GAME OVER -->
@@ -169,7 +228,7 @@
       <div class="stat-line"><span>점수</span><b id="overScore">0</b></div>
       <div class="stat-line"><span>이동 거리</span><b id="overDist">0m</b></div>
     </div>
-    <button class="primary" id="restartBtnOver">다시 도전하기</button>
+    <div class="btn-row"><button class="primary" id="restartBtnOver">다시 도전하기</button><button class="ghost" id="homeBtnOver">처음 화면 (모드 바꾸기)</button></div>
   </div>
 </div>
 
