@@ -146,7 +146,7 @@
     h1{font-size:1.5rem;} .lead{font-size:.82rem;}
     .controls-grid{grid-template-columns:1fr;}
   }
-</style>
+/* 터치 버튼: 밝은 배경에서도 잘 보이게 */ .tbtn{width:84px;height:84px;font-size:2rem;font-weight:800;background:rgba(6,40,34,.72);border:3px solid #fff;box-shadow:0 4px 14px rgba(0,0,0,.45);-webkit-tap-highlight-color:transparent;touch-action:none;-webkit-user-select:none;} .tbtn:active{background:rgba(217,140,59,.9);transform:scale(.94);} #tLeft{left:24px;bottom:calc(40px + env(safe-area-inset-bottom));} #tRight{left:128px;bottom:calc(40px + env(safe-area-inset-bottom));} #tJump{right:128px;bottom:calc(120px + env(safe-area-inset-bottom));} #tSlide{right:128px;bottom:calc(20px + env(safe-area-inset-bottom));} #tAttack{right:24px;bottom:calc(70px + env(safe-area-inset-bottom));background:rgba(217,140,59,.85);} </style>
 </head>
 <body>
 <div id="app">
