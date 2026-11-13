@@ -230,7 +230,6 @@ const dom = {
   pauseScreen: document.getElementById('pauseScreen'),
   resumeBtn: document.getElementById('resumeBtn'),
   homeBtnPause: document.getElementById('homeBtnPause'),
-  autoBtn: document.getElementById('autoBtn'),
   autoBadge: document.getElementById('autoBadge'),
   bestStart: document.getElementById('bestStart'),
 };
@@ -246,13 +245,11 @@ async function init() {
   dom.bestStart.textContent = state.best > 0 ? `내 최고 점수 ${state.best}` : '';
   dom.startBtn.textContent = '게임 시작';
   dom.startBtn.disabled = false;
-  dom.autoBtn.disabled = false;
   bindUI();
   bindInput();
   window.addEventListener('resize', onResize);
   clock = new THREE.Clock();
   renderer.setAnimationLoop(tick);
-  if (new URLSearchParams(location.search).has('auto')) { state.auto = true; startGame(); }
 }
 
 function initRenderer() {
@@ -606,6 +603,7 @@ function setPaused(v) {
 }
 
 function toggleAuto() {
+  return; // 테스트(자동 플레이) 기능 비활성화
   if (state.phase !== 'playing' && state.phase !== 'boss') return;
   state.auto = !state.auto;
   dom.autoBadge.style.display = state.auto ? 'inline-block' : 'none';
@@ -952,7 +950,6 @@ function spawnStreak() {
 // ---------- Game flow ----------
 function bindUI() {
   dom.startBtn.addEventListener('click', () => { state.auto = false; startGame(); });
-  dom.autoBtn.addEventListener('click', () => { state.auto = true; startGame(); });
   dom.pauseBtn.addEventListener('click', () => setPaused(true));
   dom.resumeBtn.addEventListener('click', () => setPaused(false));
   dom.homeBtnPause.addEventListener('click', goHome);
@@ -1618,32 +1615,3 @@ function toggleMute() {
   dom.muteBtn.textContent = audio.muted ? '♪ 소리 꺼짐' : '♪ 소리 켜짐';
   dom.muteBtn.classList.toggle('off', audio.muted);
 }
-
-// ---------- Debug / test hook (headless simulation) ----------
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-window.__hwg = {
-  state, entities,
-  ready: () => !!(playerRig && assets.otter),
-  seed(s) { Math.random = mulberry32(s); },
-  newGame(mode = 'challenge', auto = true) {
-    state.mode = mode; state.auto = auto; state.motionFx = true;
-    dom.startScreen.hidden = true;
-    resetGame();
-  },
-  // advance the real simulation without rendering; stops at win / over
-  step(n = 1, dt = 1 / 60) {
-    for (let i = 0; i < n; i++) {
-      frame(dt);
-      if (state.phase === 'win' || state.phase === 'over') break;
-    }
-    return state.phase;
-  },
-  render() { renderer.render(scene, camera); },
-};
