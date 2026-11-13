@@ -27,6 +27,7 @@ const STAGES = [
 ];
 const BOSS_TRIGGER_DIST = 1450;
 const BOSS_HP = 10;
+const BOSS_HIT_HALF_W = 1.9;   // a clam only hurts the boss if it is lined up with it
 const PROJECTILE_SPEED = 34;
 const RAMP_PER_M = 0.007;     // speed gained per meter inside a stage
 const RAMP_MAX = 2.4;         // max extra speed inside a stage
@@ -82,7 +83,23 @@ const state = {
   bossWarnLanes: null,
   bossBaseScale: 1,
   renderedLives: -1,
+  paused: false,
+  hitStop: 0,        // real-time freeze frames on impact
+  auto: false,       // autoplay (test) mode
+  autoCd: 0,
+  bossDying: 0,
+  bossPhase: 1,
+  bossAng: 0,
+  bossHurt: 0,
+  squash: 0,
+  splashTimer: 0,
+  slideQueued: false,
+  best: 0,
 };
+
+const BEST_KEY = 'hwg_best_score';
+function loadBest() { try { return Number(localStorage.getItem(BEST_KEY)) || 0; } catch (e) { return 0; } }
+function saveBest(v) { try { localStorage.setItem(BEST_KEY, String(v)); } catch (e) { /* storage unavailable */ } }
 
 let renderer, scene, camera, clock;
 let waterMat, waterUniforms;
@@ -93,6 +110,87 @@ const bossWarnSprites = [];
 const entities = []; // {mesh, x, type, destructible, kind}
 const projectiles = []; // {mesh} — player-fired clams
 const assets = {};
+let playerBaseScale = null;
+let animT = 0;
+let sharedStreak = null;
+
+// ---------- Particles (one InstancedMesh, pooled) ----------
+const MAX_PARTICLES = 420;
+let partMesh;
+let partCursor = 0;
+const parts = [];
+const _mat4 = new THREE.Matrix4();
+const _quat = new THREE.Quaternion();
+const _scl = new THREE.Vector3();
+const _pos = new THREE.Vector3();
+const _col = new THREE.Color();
+const ZERO_MAT = new THREE.Matrix4().makeScale(0, 0, 0);
+
+function initParticles() {
+  const geo = new THREE.IcosahedronGeometry(0.5, 0);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  partMesh = new THREE.InstancedMesh(geo, mat, MAX_PARTICLES);
+  partMesh.frustumCulled = false;
+  partMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  partMesh.renderOrder = 5;
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    partMesh.setMatrixAt(i, ZERO_MAT);
+    partMesh.setColorAt(i, _col.set(0xffffff));
+    parts.push({ life: 0, max: 1, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, size: 0.1, grav: 9, drift: true });
+  }
+  partMesh.instanceColor.needsUpdate = true;
+  scene.add(partMesh);
+}
+
+function emit(x, y, z, count, o = {}) {
+  const { color = 0xffffff, speed = 3, up = 3, size = 0.14, life = 0.6, grav = 9, drift = true } = o;
+  for (let n = 0; n < count; n++) {
+    const idx = partCursor;
+    partCursor = (partCursor + 1) % MAX_PARTICLES;
+    const p = parts[idx];
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * speed;
+    p.x = x; p.y = y; p.z = z;
+    p.vx = Math.cos(a) * r; p.vz = Math.sin(a) * r * 0.7;
+    p.vy = up * (0.35 + Math.random() * 0.9);
+    p.max = p.life = life * (0.6 + Math.random() * 0.6);
+    p.size = size * (0.55 + Math.random() * 0.9);
+    p.grav = grav; p.drift = drift;
+    partMesh.setColorAt(idx, _col.set(Array.isArray(color) ? color[(Math.random() * color.length) | 0] : color));
+  }
+  partMesh.instanceColor.needsUpdate = true;
+}
+
+function updateParticles(dt, worldSpeed) {
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    const p = parts[i];
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    if (p.life <= 0) { partMesh.setMatrixAt(i, ZERO_MAT); continue; }
+    p.vy -= p.grav * dt;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt + (p.drift ? worldSpeed * dt : 0);
+    if (p.y < 0.03 && p.vy < 0) { p.y = 0.03; p.vy *= -0.25; p.vx *= 0.6; p.vz *= 0.6; }
+    const s = p.size * (0.25 + 0.75 * (p.life / p.max));
+    _pos.set(p.x, p.y, p.z); _scl.set(s, s, s);
+    _mat4.compose(_pos, _quat, _scl);
+    partMesh.setMatrixAt(i, _mat4);
+  }
+  partMesh.instanceMatrix.needsUpdate = true;
+}
+
+function clearParticles() {
+  for (let i = 0; i < MAX_PARTICLES; i++) { parts[i].life = 0; partMesh.setMatrixAt(i, ZERO_MAT); }
+  partMesh.instanceMatrix.needsUpdate = true;
+}
+
+const DEBRIS = {
+  rock: [0x8a8f8a, 0x6d726e, 0xaab0aa],
+  log: [0x8a5a2b, 0x6b4220, 0xa87444],
+  sodacan: [0xd9dde2, 0xe5393d, 0xa8adb3],
+  poop: [0x7a4a22, 0x5a3517],
+  trash: [0x44484d, 0x7bd0e0, 0x9aa0a6],
+  bridge: [0x8a6a4a, 0xa88660],
+};
 
 const dom = {
   hud: document.getElementById('hud'),
@@ -128,6 +226,13 @@ const dom = {
   modeBtns: document.querySelectorAll('.mode-btn'),
   homeBtnWin: document.getElementById('homeBtnWin'),
   homeBtnOver: document.getElementById('homeBtnOver'),
+  pauseBtn: document.getElementById('pauseBtn'),
+  pauseScreen: document.getElementById('pauseScreen'),
+  resumeBtn: document.getElementById('resumeBtn'),
+  homeBtnPause: document.getElementById('homeBtnPause'),
+  autoBtn: document.getElementById('autoBtn'),
+  autoBadge: document.getElementById('autoBadge'),
+  bestStart: document.getElementById('bestStart'),
 };
 
 init();
@@ -137,13 +242,17 @@ async function init() {
   initScene();
   await loadAssets();
   buildPlayer();
+  state.best = loadBest();
+  dom.bestStart.textContent = state.best > 0 ? `내 최고 점수 ${state.best}` : '';
   dom.startBtn.textContent = '게임 시작';
   dom.startBtn.disabled = false;
+  dom.autoBtn.disabled = false;
   bindUI();
   bindInput();
   window.addEventListener('resize', onResize);
   clock = new THREE.Clock();
   renderer.setAnimationLoop(tick);
+  if (new URLSearchParams(location.search).has('auto')) { state.auto = true; startGame(); }
 }
 
 function initRenderer() {
@@ -174,7 +283,12 @@ function initScene() {
   createBanks();
   createMudSurge();
   warnTex = makeWarnTexture();
-  for (let i = 0; i < 2; i++) {
+  initParticles();
+  sharedStreak = {
+    geo: new THREE.PlaneGeometry(0.1, 2.4),
+    mat: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false }),
+  };
+  for (let i = 0; i < 3; i++) {
     const sp = makeWarnSprite();
     sp.visible = false;
     scene.add(sp);
@@ -342,7 +456,7 @@ function targetSizeFor(key) {
   switch (key) {
     case 'otter': return 1.05;
     case 'clam': return 1.05;
-    case 'boss': return 2.6;
+    case 'boss': return 4.2;
     case 'trash': return 0.8;
     case 'rock': return 1.7;
     case 'sodacan': return 1.1;
@@ -385,6 +499,7 @@ function buildPlayer() {
   playerRig = new THREE.Group();
   playerModel = assets.otter.clone(true);
   playerModel.rotation.y = Math.PI;
+  playerBaseScale = playerModel.scale.clone();
   playerRig.add(playerModel);
   playerRig.position.set(LANES[1], 0, PLAYER_Z);
   scene.add(playerRig);
@@ -406,11 +521,14 @@ const KEY_ALIASES = {
   arrowdown: 'ArrowDown', s: 'ArrowDown',
   f: 'KeyF',
   m: 'KeyM',
+  p: 'KeyP', escape: 'KeyP',
+  t: 'KeyT',
 };
 
 function resolveKey(e) {
   const byCode = { ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
-    KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', KeyF: 'KeyF', KeyM: 'KeyM', Space: 'ArrowUp' }[e.code];
+    KeyA: 'ArrowLeft', KeyD: 'ArrowRight', KeyW: 'ArrowUp', KeyS: 'ArrowDown', KeyF: 'KeyF', KeyM: 'KeyM', Space: 'ArrowUp',
+    KeyP: 'KeyP', Escape: 'KeyP', KeyT: 'KeyT' }[e.code];
   if (byCode) return byCode;
   const key = (e.key || '').toLowerCase();
   return KEY_ALIASES[key] || null;
@@ -420,11 +538,14 @@ function bindInput() {
   window.addEventListener('keydown', (e) => {
     const action = resolveKey(e);
     if (!action) return;
+    e.preventDefault();
     const id = e.code || action;
     if (keys.has(id)) return;
     keys.add(id);
     handleDiscreteAction(action);
   });
+  window.addEventListener('blur', () => { keys.clear(); autoPauseIfPlaying(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) autoPauseIfPlaying(); });
   window.addEventListener('keyup', (e) => keys.delete(e.code || resolveKey(e)));
 
   window.addEventListener('gamepadconnected', () => {
@@ -446,11 +567,56 @@ function bindInput() {
   bindTouch('tSlide', 'ArrowDown');
   bindTouch('tAttack', 'KeyF');
   if ('ontouchstart' in window) dom.touchControls.classList.add('active');
+
+  // swipe: left/right = lane, up = jump, down = dive, tap = jump
+  const cv = document.getElementById('gameCanvas');
+  let sw = null;
+  cv.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    sw = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false, done: false };
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!sw || sw.done) return;
+    const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
+    if (Math.abs(dx) > 36 && Math.abs(dx) > Math.abs(dy)) {
+      handleDiscreteAction(dx < 0 ? 'ArrowLeft' : 'ArrowRight');
+      sw.x = e.clientX; sw.y = e.clientY; sw.moved = true;
+    } else if (Math.abs(dy) > 36 && Math.abs(dy) > Math.abs(dx)) {
+      handleDiscreteAction(dy < 0 ? 'ArrowUp' : 'ArrowDown');
+      sw.moved = true; sw.done = true;
+    }
+  });
+  const endSwipe = () => {
+    if (sw && !sw.moved && performance.now() - sw.t < 260) handleDiscreteAction('ArrowUp');
+    sw = null;
+  };
+  cv.addEventListener('pointerup', endSwipe);
+  cv.addEventListener('pointercancel', () => { sw = null; });
+}
+
+function autoPauseIfPlaying() {
+  if ((state.phase === 'playing' || state.phase === 'boss') && !state.paused) setPaused(true);
+}
+
+function setPaused(v) {
+  if (v && state.phase !== 'playing' && state.phase !== 'boss') return;
+  state.paused = v;
+  dom.pauseScreen.hidden = !v;
+  if (audio.ctx) { if (v) audio.ctx.suspend(); else audio.ctx.resume(); }
+}
+
+function toggleAuto() {
+  if (state.phase !== 'playing' && state.phase !== 'boss') return;
+  state.auto = !state.auto;
+  dom.autoBadge.style.display = state.auto ? 'inline-block' : 'none';
 }
 
 function handleDiscreteAction(action) {
   if (action === 'KeyM') { toggleMute(); return; }
+  if (action === 'KeyP') { setPaused(!state.paused); return; }
+  if (action === 'KeyT') { if (!state.paused) toggleAuto(); return; }
   if (state.phase !== 'playing' && state.phase !== 'boss') return;
+  if (state.paused || state.auto) return;
   if (action === 'ArrowLeft') moveLane(-1);
   else if (action === 'ArrowRight') moveLane(1);
   else if (action === 'ArrowUp') doJump();
@@ -481,20 +647,38 @@ function pollGamepad() {
 
 function moveLane(dir) {
   const next = Math.min(2, Math.max(0, state.lane + dir));
-  if (next !== state.lane) state.lastLaneChange = state.time;
+  if (next !== state.lane) {
+    state.lastLaneChange = state.time;
+    if (!state.jumping) emit(playerRig.position.x, 0.15, PLAYER_Z + 0.4, 5, { color: [0xffffff, 0xbfefff], speed: 1.6, up: 1.6, size: 0.1, life: 0.4 });
+  }
   state.lane = next;
 }
 
 function doJump() {
-  if (state.jumping || state.sliding) return;
+  if (state.jumping) return;
+  state.sliding = false;      // jumping out of a dive is allowed
+  state.slideQueued = false;
   state.jumping = true;
   state.vy = 6.4;
+  state.squash = -0.9; // stretch on take-off
+  emit(playerRig.position.x, 0.12, PLAYER_Z, 10, { color: [0xffffff, 0x9fe6ff], speed: 2.2, up: 3.2, size: 0.12, life: 0.5 });
+  sfx.splash();
 }
 
 function doSlide() {
-  if (state.jumping || state.sliding) return;
+  if (state.sliding || state.slideQueued) return;
+  if (state.jumping) {        // dive while airborne: drop fast, start the dive on landing
+    state.vy = Math.min(state.vy, -14);
+    state.slideQueued = true;
+    return;
+  }
+  startSlide();
+}
+
+function startSlide() {
   state.sliding = true;
   state.slideTimer = 0.7;
+  emit(playerRig.position.x, 0.2, PLAYER_Z, 8, { color: [0xffffff, 0xcff6ff], speed: 1.4, up: 2.4, size: 0.1, life: 0.6, grav: 2 });
 }
 
 function doAttack() {
@@ -507,6 +691,9 @@ function doAttack() {
   mesh.position.set(playerRig.position.x, 0.6 + state.y, PLAYER_Z - 1.1);
   scene.add(mesh);
   projectiles.push({ mesh });
+  state.squash = 0.5;               // little recoil
+  emit(playerRig.position.x, 0.5 + state.y, PLAYER_Z - 0.9, 5, { color: [0xfff3c8, 0xffd27a], speed: 1.2, up: 0.8, size: 0.09, life: 0.3, grav: 2, drift: false });
+  sfx.shoot();
 }
 
 function updateProjectiles(dt) {
@@ -516,26 +703,40 @@ function updateProjectiles(dt) {
     p.mesh.rotation.x += dt * 18;
 
     let hit = false;
+    // window widens with the frame step so a shot can never tunnel through at low FPS
+    const zWin = 1.0 + (PROJECTILE_SPEED + state.speed) * dt * 0.55;
     for (let j = entities.length - 1; j >= 0; j--) {
       const ent = entities[j];
       if (!ent.destructible) continue;
-      if (Math.abs(ent.mesh.position.z - p.mesh.position.z) < 1.0 && Math.abs(ent.mesh.position.x - p.mesh.position.x) < 1.0) {
+      if (Math.abs(ent.mesh.position.z - p.mesh.position.z) < zWin && Math.abs(ent.mesh.position.x - p.mesh.position.x) < 1.0) {
+        const ex = ent.mesh.position.x, ey = 0.6, ez = ent.mesh.position.z;
         scene.remove(ent.mesh);
         entities.splice(j, 1);
         if (ent.kind === 'trash' || ent.kind === 'sodacan' || ent.kind === 'poop') {
           state.trashCleared += 1;
           popText('쓰레기 치움 +15', 'clean');
         }
+        emit(ex, ey, ez, 16, { color: DEBRIS[ent.kind] || 0xffffff, speed: 3.2, up: 4.2, size: 0.17, life: 0.7 });
+        emit(ex, ey, ez, 6, { color: [0xbfffd8, 0x9ff0c9], speed: 1.6, up: 2.6, size: 0.1, life: 0.6 });
+        state.hitStop = Math.max(state.hitStop, 0.04);
+        if (state.motionFx) state.shake = Math.max(state.shake, 0.14);
         sfx.pop();
         hit = true;
         break;
       }
     }
-    if (!hit && state.phase === 'boss' && state.boss && p.mesh.position.z <= BOSS_Z + 1.8) {
+    if (!hit && state.phase === 'boss' && state.boss && state.bossDying <= 0
+        && p.mesh.position.z <= BOSS_Z + 1.8 && p.mesh.position.z >= BOSS_Z - 3
+        && Math.abs(p.mesh.position.x - state.boss.position.x) < BOSS_HIT_HALF_W) {
       state.bossHp -= 1;
+      state.bossHurt = 0.5;
       hit = true;
       sfx.bossHit();
-      if (state.bossHp <= 0) winGame();
+      emit(p.mesh.position.x, 1.4, BOSS_Z + 1.2, 14, { color: [0x44484d, 0x7bd0e0, 0xfff3c8], speed: 3.4, up: 3.6, size: 0.18, life: 0.7 });
+      state.hitStop = Math.max(state.hitStop, 0.07);
+      if (state.motionFx) state.shake = Math.max(state.shake, 0.22);
+      popText(`보스 -1 (${Math.max(0, state.bossHp)}/${BOSS_HP})`, 'near');
+      if (state.bossHp <= 0) startBossDeath();
     }
 
     if (hit) {
@@ -674,6 +875,45 @@ function spawnScenery() {
 }
 
 const BOSS_Z = -17;
+const BOSS_FREQ = [0, 1.1, 1.5, 1.9];
+const BOSS_INTERVAL = [0, 1.25, 1.0, 0.85];
+
+function startBossDeath() {
+  state.bossDying = 2.2;
+  state.slowmoTimer = 0.6;
+  state.hitStop = Math.max(state.hitStop, 0.25);
+  state.shake = state.motionFx ? 0.8 : 0;
+  state.bossWarnLanes = null;
+  for (const sp of bossWarnSprites) sp.visible = false;
+  // leftover boss trash is cleaned up in the blast
+  for (let j = entities.length - 1; j >= 0; j--) {
+    const ent = entities[j];
+    if (!ent.isBossProjectile) continue;
+    emit(ent.mesh.position.x, 0.5, ent.mesh.position.z, 8, { color: DEBRIS.trash, speed: 2.6, up: 3.2, size: 0.15, life: 0.6 });
+    scene.remove(ent.mesh);
+    entities.splice(j, 1);
+    state.trashCleared += 1;
+  }
+  popText('쓰레기 보스 정화!', 'boss');
+  sfx.bossDie();
+}
+
+function updateBossDeath(dt) {
+  const b = state.boss;
+  state.bossDying -= dt;
+  const k = Math.max(0, state.bossDying / 2.2);
+  b.position.x += (Math.random() - 0.5) * 0.25;
+  b.scale.setScalar(state.bossBaseScale * (0.35 + 0.65 * k));
+  b.rotation.y += dt * (6 + (1 - k) * 10);
+  if (Math.random() < 0.55) {
+    emit(b.position.x + (Math.random() - 0.5) * 2, 0.8 + Math.random() * 1.6, BOSS_Z + 0.5, 6,
+      { color: [0x44484d, 0xff8a65, 0xffd27a, 0xffffff], speed: 3.6, up: 4, size: 0.2, life: 0.8 });
+  }
+  if (state.bossDying <= 0) {
+    emit(b.position.x, 1.2, BOSS_Z + 0.5, 60, { color: [0xbfffd8, 0x9ff0c9, 0xffffff, 0xffd27a], speed: 6, up: 6, size: 0.22, life: 1.1 });
+    winGame();
+  }
+}
 
 function spawnBoss() {
   const mesh = cloneAsset('boss');
@@ -684,6 +924,8 @@ function spawnBoss() {
   state.bossHp = BOSS_HP;
   state.bossAttackTimer = 1.6;
   state.bossWarnLanes = null;
+  state.bossPhase = 1; state.bossAng = 0; state.bossHurt = 0; state.bossDying = 0;
+  state.shake = state.motionFx ? 0.5 : 0;
   popText('보스 등장!', 'boss');
   sfx.warn();
   dom.bossBar.classList.add('show');
@@ -699,9 +941,7 @@ function spawnTrashProjectile(lane) {
 }
 
 function spawnStreak() {
-  const geo = new THREE.PlaneGeometry(0.1, 2.4);
-  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false });
-  const mesh = new THREE.Mesh(geo, mat);
+  const mesh = new THREE.Mesh(sharedStreak.geo, sharedStreak.mat);
   mesh.rotation.x = -Math.PI / 2;
   const divider = Math.random() < 0.5 ? -1.1 : 1.1;
   mesh.position.set(divider, 0.04, SPAWN_Z);
@@ -711,7 +951,11 @@ function spawnStreak() {
 
 // ---------- Game flow ----------
 function bindUI() {
-  dom.startBtn.addEventListener('click', startGame);
+  dom.startBtn.addEventListener('click', () => { state.auto = false; startGame(); });
+  dom.autoBtn.addEventListener('click', () => { state.auto = true; startGame(); });
+  dom.pauseBtn.addEventListener('click', () => setPaused(true));
+  dom.resumeBtn.addEventListener('click', () => setPaused(false));
+  dom.homeBtnPause.addEventListener('click', goHome);
   dom.restartBtnWin.addEventListener('click', resetGame);
   dom.restartBtnOver.addEventListener('click', resetGame);
   dom.homeBtnWin.addEventListener('click', goHome);
@@ -731,10 +975,27 @@ function startGame() {
 }
 
 function goHome() {
+  state.auto = false;
+  state.paused = false;
+  state.phase = 'start';
+  dom.pauseScreen.hidden = true;
+  dom.hud.classList.remove('active');
+  dom.bossBar.classList.remove('show');
   dom.winScreen.hidden = true;
   dom.overScreen.hidden = true;
   dom.startScreen.hidden = false;
   dom.dangerVignette.classList.remove('on');
+  dom.bestStart.textContent = state.best > 0 ? `내 최고 점수 ${state.best}` : '';
+  if (audio.ctx) audio.ctx.resume();
+}
+
+// Records the best score (manual play only) and returns true on a new record.
+function recordScore() {
+  const s = Math.floor(state.score);
+  if (state.auto || s <= state.best) return false;
+  state.best = s;
+  saveBest(s);
+  return true;
 }
 
 function resetGame() {
@@ -754,7 +1015,11 @@ function resetGame() {
     attackCooldown: 0, stageIndex: 0, spawnTimer: 0, sceneryTimer: 0,
     clamTimer: 0, streakTimer: 0, shake: 0,
     bossHp: BOSS_HP, bossAttackTimer: 0, bossT: 0, trashCleared: 0, speed: STAGES[0].speed,
+    paused: false, hitStop: 0, autoCd: 0, bossDying: 0, bossPhase: 1, bossAng: 0, bossHurt: 0, squash: 0, splashTimer: 0, slideQueued: false,
   });
+  clearParticles();
+  dom.pauseScreen.hidden = true;
+  dom.autoBadge.style.display = state.auto ? 'inline-block' : 'none';
   playerRig.position.set(LANES[1], 0, PLAYER_Z);
   camera.fov = 62; camera.updateProjectionMatrix();
   mudMesh.visible = mode.surge;
@@ -799,9 +1064,11 @@ function applyStageVisuals(stage) {
 }
 
 function loseLife(reason) {
-  if (state.invuln > 0) return;
+  if (state.invuln > 0 || state.bossDying > 0) return;
   state.lives -= 1;
   state.invuln = 1.5;
+  state.hitStop = 0.09;
+  emit(playerRig.position.x, 0.8, PLAYER_Z, 18, { color: [0xff7a5c, 0xffd27a, 0xffffff], speed: 3.4, up: 4, size: 0.16, life: 0.6 });
   state.shake = state.motionFx ? 0.45 : 0;
   state.slowTimer = 1.4;          // otter loses momentum...
   state.combo = 0;
@@ -825,6 +1092,7 @@ function nearMiss() {
 
 function collectClam() {
   state.clams += 1;
+  emit(playerRig.position.x, 0.7 + state.y, PLAYER_Z, 7, { color: [0xfff3c8, 0xffd27a, 0xffffff], speed: 1.8, up: 2.6, size: 0.1, life: 0.45, grav: 5 });
   state.combo = state.comboTimer > 0 ? state.combo + 1 : 1;
   state.comboTimer = 1.4;
   const mult = comboMult();
@@ -841,7 +1109,9 @@ function gameOver(reason) {
   for (const sp of bossWarnSprites) sp.visible = false;
   dom.hud.classList.remove('active');
   dom.overReason.textContent = reason || '다시 도전해서 영산강 합류부까지 헤엄쳐 보세요.';
-  document.getElementById('overScore').textContent = Math.floor(state.score);
+  const record = recordScore();
+  document.getElementById('overScore').textContent = Math.floor(state.score) + (record ? ' 🎉 새 기록!' : '');
+  document.getElementById('overBest').textContent = state.auto ? '자동 플레이는 기록 안 됨' : state.best;
   document.getElementById('overDist').textContent = Math.floor(state.distance) + 'm';
   dom.overScreen.hidden = false;
 }
@@ -853,7 +1123,9 @@ function winGame() {
   for (const sp of bossWarnSprites) sp.visible = false;
   dom.hud.classList.remove('active');
   dom.bossBar.classList.remove('show');
-  document.getElementById('winScore').textContent = Math.floor(state.score);
+  const record = recordScore();
+  document.getElementById('winScore').textContent = Math.floor(state.score) + (record ? ' 🎉 새 기록!' : '');
+  document.getElementById('winBest').textContent = state.auto ? '자동 플레이는 기록 안 됨' : state.best;
   document.getElementById('winDist').textContent = Math.floor(state.distance) + 'm';
   document.getElementById('winTrash').textContent = state.trashCleared + '개';
   dom.winScreen.hidden = false;
@@ -874,16 +1146,26 @@ function ensureSize() {
 function tick() {
   ensureSize();
   const dt = Math.min(clock.getDelta(), 0.05);
-  waterUniforms.uTime.value += dt;
-  mudUniforms.uTime.value += dt;
   pollGamepad();
-
-  let ts = 1;
-  if (state.slowmoTimer > 0) { state.slowmoTimer -= dt; ts = 0.4; }
-  if (state.slowmoCd > 0) state.slowmoCd -= dt;
-  if (state.phase === 'playing' || state.phase === 'boss') updateGame(dt * ts);
-  updatePlayerVisual(dt);
+  frame(dt);
   renderer.render(scene, camera);
+}
+
+// One simulation frame. Shared by the render loop and the headless test hook.
+function frame(dt) {
+  const running = state.phase === 'playing' || state.phase === 'boss';
+  let ts = 1;
+  if (state.paused) ts = 0;
+  else if (state.hitStop > 0) { state.hitStop -= dt; ts = 0; }       // hit stop: freeze the world, keep the camera shaking
+  else if (state.slowmoTimer > 0) { state.slowmoTimer -= dt; ts = 0.4; }
+  if (!state.paused) {
+    waterUniforms.uTime.value += dt * (ts > 0 ? 1 : 0.15);
+    mudUniforms.uTime.value += dt * (ts > 0 ? 1 : 0.15);
+    if (state.slowmoCd > 0) state.slowmoCd -= dt;
+  }
+  if (running && ts > 0) updateGame(dt * ts);
+  updateParticles(dt * ts, running && ts > 0 ? state.speed : 0);
+  if (!state.paused) updatePlayerVisual(dt);
 }
 
 function updateGame(dt) {
@@ -935,6 +1217,8 @@ function updateGame(dt) {
 
   state.score = Math.floor(state.distance) + state.bonus + state.trashCleared * 15;
 
+  if (state.auto && state.bossDying <= 0) autoPilot(dt);
+
   // lane movement
   const targetX = LANES[state.lane];
   playerRig.position.x += (targetX - playerRig.position.x) * Math.min(1, dt * 10);
@@ -943,7 +1227,20 @@ function updateGame(dt) {
   if (state.jumping) {
     state.vy -= 18 * dt;
     state.y += state.vy * dt;
-    if (state.y <= 0) { state.y = 0; state.vy = 0; state.jumping = false; }
+    if (state.y <= 0) {
+      state.y = 0; state.vy = 0; state.jumping = false;
+      if (state.slideQueued) { state.slideQueued = false; startSlide(); }
+      state.squash = 1; // landing squash + splash ring
+      emit(playerRig.position.x, 0.1, PLAYER_Z, 14, { color: [0xffffff, 0x9fe6ff, 0xcff6ff], speed: 2.8, up: 2.4, size: 0.13, life: 0.5 });
+      sfx.splash();
+    }
+  }
+  // wake: little droplets trailing behind the swimming otter
+  state.splashTimer -= dt;
+  if (state.splashTimer <= 0) {
+    state.splashTimer = state.sliding ? 0.04 : 0.06;
+    emit(playerRig.position.x + (Math.random() - 0.5) * 0.5, state.sliding ? 0.15 : 0.1 + state.y, PLAYER_Z + 0.7, state.sliding ? 2 : 1,
+      { color: [0xffffff, 0xcff6ff], speed: 0.6, up: 1.2, size: 0.09, life: 0.5, grav: 4 });
   }
   // slide timer
   if (state.sliding) {
@@ -972,33 +1269,47 @@ function updateGame(dt) {
   state.streakTimer -= dt;
   if (state.streakTimer <= 0) { spawnStreak(); state.streakTimer = 0.1; }
 
-  // boss behavior — weaves side to side while flinging trash faster
+  // boss behavior — 3 phases: weave + 2-lane throws -> faster -> frenzy with 3-lane volleys
   if (state.phase === 'boss' && state.boss) {
     state.bossT += dt;
-    state.boss.position.x = Math.sin(state.bossT * 1.1) * 2.8;
-    state.bossAttackTimer -= dt;
-    // telegraph: show warning signs over the target lanes before the throw
-    if (!state.bossWarnLanes && state.bossAttackTimer <= 0.55) {
-      const laneA = Math.floor(Math.random() * 3);
-      let laneB = Math.floor(Math.random() * 3);
-      if (laneB === laneA) laneB = (laneB + 1) % 3;
-      state.bossWarnLanes = [laneA, laneB];
-      state.bossWarnLanes.forEach((l, i) => {
-        bossWarnSprites[i].position.set(LANES[l], 2.0, -7);
-        bossWarnSprites[i].visible = true;
-      });
-      sfx.warn();
-    }
-    const warning = !!state.bossWarnLanes;
-    const pulse = warning ? 1 + 0.12 * Math.abs(Math.sin(state.bossT * 18)) : 1;
-    state.boss.scale.setScalar(state.bossBaseScale * pulse);
-    if (warning) bossWarnSprites.forEach((sp) => { sp.material.opacity = 0.55 + 0.45 * Math.abs(Math.sin(state.bossT * 14)); });
-    if (state.bossAttackTimer <= 0) {
-      for (const l of state.bossWarnLanes || []) spawnTrashProjectile(l);
-      for (const sp of bossWarnSprites) sp.visible = false;
-      state.bossWarnLanes = null;
-      // boss throws faster as it weakens
-      state.bossAttackTimer = 1.25 - (1 - state.bossHp / BOSS_HP) * 0.4;
+    if (state.bossHurt > 0) state.bossHurt = Math.max(0, state.bossHurt - dt * 2.5);
+    if (state.bossDying > 0) {
+      updateBossDeath(dt);
+    } else {
+      const ratio = state.bossHp / BOSS_HP;
+      const phase = ratio > 0.6 ? 1 : ratio > 0.3 ? 2 : 3;
+      if (phase !== state.bossPhase) {
+        state.bossPhase = phase;
+        popText(phase === 2 ? '보스가 화났다!' : '보스 폭주! 점프로 피하세요', 'boss');
+        sfx.phase();
+        if (state.motionFx) state.shake = Math.max(state.shake, 0.45);
+        emit(state.boss.position.x, 1.6, BOSS_Z + 1, 24, { color: [0x44484d, 0xff8a65, 0xffd27a], speed: 4.4, up: 4.4, size: 0.2, life: 0.8 });
+        state.bossAttackTimer = Math.min(state.bossAttackTimer, 0.9);
+      }
+      state.bossAng += dt * BOSS_FREQ[phase];
+      state.boss.position.x = Math.sin(state.bossAng) * 2.8;
+      state.bossAttackTimer -= dt;
+      // telegraph: show warning signs over the target lanes before the throw
+      if (!state.bossWarnLanes && state.bossAttackTimer <= 0.55) {
+        const order = [0, 1, 2].sort(() => Math.random() - 0.5);
+        state.bossWarnLanes = order.slice(0, phase === 3 ? 3 : 2);
+        state.bossWarnLanes.forEach((l, i) => {
+          bossWarnSprites[i].position.set(LANES[l], 2.0, -7);
+          bossWarnSprites[i].visible = true;
+        });
+        sfx.warn();
+      }
+      const warning = !!state.bossWarnLanes;
+      const pulse = warning ? 1 + 0.12 * Math.abs(Math.sin(state.bossT * 18)) : 1;
+      state.boss.scale.setScalar(state.bossBaseScale * pulse * (1 + state.bossHurt * 0.5));
+      state.boss.rotation.z = Math.sin(state.bossT * 3) * 0.05 + state.bossHurt * 0.4;
+      if (warning) bossWarnSprites.forEach((sp) => { sp.material.opacity = 0.55 + 0.45 * Math.abs(Math.sin(state.bossT * 14)); });
+      if (state.bossAttackTimer <= 0) {
+        for (const l of state.bossWarnLanes || []) spawnTrashProjectile(l);
+        for (const sp of bossWarnSprites) sp.visible = false;
+        state.bossWarnLanes = null;
+        state.bossAttackTimer = BOSS_INTERVAL[phase];
+      }
     }
     dom.bossFill.style.width = Math.max(0, (state.bossHp / BOSS_HP) * 100) + '%';
   }
@@ -1050,6 +1361,7 @@ function updateGame(dt) {
         (ent.type === 'high' && state.sliding);
       if (avoided) ent.dodged = true;
       else {
+        emit(ent.mesh.position.x, 0.6, ent.mesh.position.z, 14, { color: DEBRIS[ent.kind] || 0xffffff, speed: 3, up: 3.6, size: 0.16, life: 0.6 });
         scene.remove(ent.mesh);
         entities.splice(i, 1);
         loseLife(ent.isBossProjectile ? '보스의 쓰레기에 맞았어요.' : '장애물에 부딪혔어요.');
@@ -1081,11 +1393,25 @@ function renderHearts() {
 }
 
 function updatePlayerVisual(dt) {
+  animT += dt;
   playerRig.position.y = state.y;
-  const targetY = state.sliding ? -0.85 : 0;
-  const targetTilt = state.sliding ? -0.45 : 0;
+  const running = state.phase === 'playing' || state.phase === 'boss';
+  const swim = running ? Math.sin(animT * 9) : Math.sin(animT * 2) * 0.4;       // paddling rhythm
+  const targetY = state.sliding ? -0.85 : swim * 0.05;
+  // nose up while rising, down while falling, dive angle when sliding
+  const targetTilt = state.sliding ? -0.45 : state.jumping ? Math.max(-0.45, Math.min(0.4, state.vy * 0.06)) : swim * 0.05;
+  // bank into the turn
+  const lateral = (LANES[state.lane] - playerRig.position.x);
+  const targetRoll = Math.max(-0.5, Math.min(0.5, lateral * 0.22)) + swim * 0.07;
   playerModel.position.y += (targetY - playerModel.position.y) * Math.min(1, dt * 12);
   playerModel.rotation.x += (targetTilt - playerModel.rotation.x) * Math.min(1, dt * 12);
+  playerModel.rotation.z += (targetRoll - playerModel.rotation.z) * Math.min(1, dt * 14);
+  // squash & stretch (jump take-off stretches, landing squashes, shooting recoils)
+  state.squash += (0 - state.squash) * Math.min(1, dt * 9);
+  if (playerBaseScale) {
+    const sy = 1 - 0.22 * state.squash, sxz = 1 + 0.12 * state.squash;
+    playerModel.scale.set(playerBaseScale.x * sxz, playerBaseScale.y * sy, playerBaseScale.z * sxz);
+  }
 
   if (state.invuln > 0) {
     playerModel.visible = Math.floor(state.invuln * 14) % 2 === 0;
@@ -1109,6 +1435,81 @@ function updatePlayerVisual(dt) {
   if (Math.abs(camera.fov - targetFov) > 0.05) {
     camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 2.5);
     camera.updateProjectionMatrix();
+  }
+}
+
+// ---------- Autoplay (test mode) ----------
+// A bot that plays by the real rules: it only calls the same moveLane / doJump / doSlide / doAttack
+// a human would, and every hit is still decided by the normal collision code.
+function laneOfX(x) {
+  let best = 0;
+  for (let l = 1; l < 3; l++) if (Math.abs(LANES[l] - x) < Math.abs(LANES[best] - x)) best = l;
+  return best;
+}
+
+function autoPilot(dt) {
+  state.autoCd -= dt;
+  const sp = state.speed;
+  const horizon = Math.max(16, sp * 1.1);
+  const inBoss = state.phase === 'boss' && state.boss;
+  const info = [0, 1, 2].map(() => ({ rock: 99, low: 99, high: 99, clam: 99, trashD: 99 }));
+  for (const e of entities) {
+    if (!e.isObstacle && e.kind !== 'clam') continue;
+    const d = PLAYER_Z - e.mesh.position.z;       // >0: still ahead of the otter
+    if (d < -1.0 || d > horizon + 8) continue;
+    const l = laneOfX(e.targetX !== undefined ? e.targetX : e.mesh.position.x);
+    const slot = info[l];
+    if (e.kind === 'clam') slot.clam = Math.min(slot.clam, d);
+    else if (e.type === 'side') slot.rock = Math.min(slot.rock, d);
+    else if (e.type === 'low') slot.low = Math.min(slot.low, d);
+    else if (e.type === 'high') slot.high = Math.min(slot.high, d);
+    if (e.destructible && d > 2) slot.trashD = Math.min(slot.trashD, d);
+  }
+
+  // where the boss will be when a clam fired now reaches it
+  let bossX = 0;
+  if (inBoss) bossX = Math.sin(state.bossAng + BOSS_FREQ[state.bossPhase] * 0.42) * 2.8;
+
+  // choose the best lane
+  const cost = (l) => {
+    const s = info[l];
+    let c = Math.abs(l - state.lane) * 0.3;
+    if (s.rock < horizon) c += 100 - s.rock;
+    c += (s.low < horizon ? (inBoss ? 0.6 : 3) : 0) + (s.high < horizon ? 3 : 0);
+    if (s.low < horizon && s.high < horizon) c += 4;
+    if (s.clam < horizon) c -= 1.2;
+    if (inBoss && state.clams > 0) c += Math.abs(LANES[l] - bossX) * 1.1;
+    return c;
+  };
+  // once a jump/dive obstacle is close, stay committed to the lane (don't wander off after a clam)
+  const cur = info[state.lane];
+  const commitD = sp * 0.6 + 2;
+  const committed = (cur.low < commitD || cur.high < commitD) && cur.rock >= horizon;
+  if (state.autoCd <= 0 && !committed) {
+    let bestL = state.lane;
+    for (let l = 0; l < 3; l++) if (cost(l) < cost(bestL) - 0.05) bestL = l;
+    if (bestL !== state.lane) {
+      const step = Math.sign(bestL - state.lane);
+      const next = state.lane + step;
+      // never step into a lane whose rock is about to arrive
+      if (info[next].rock > sp * 0.32 + 2.2 || info[next].rock < -0.5) {
+        moveLane(step);
+        state.autoCd = 0.14;
+      }
+    }
+  }
+
+  const here = info[state.lane];
+  if (here.low < 0.85 + sp * 0.17 && here.low > -0.6 && !state.jumping) doJump();
+  else if (here.high < 0.85 + sp * 0.15 && here.high > -0.6 && !state.sliding) doSlide();
+
+  // shooting
+  if (state.attackCooldown <= 0 && state.clams > 0) {
+    if (inBoss) {
+      if (Math.abs(bossX - playerRig.position.x) < 1.4) doAttack();
+    } else if (state.clams >= 6 && here.trashD < 20) {
+      doAttack();
+    }
   }
 }
 
@@ -1200,6 +1601,14 @@ const sfx = {
   bossHit() { audio.tone(220, now(), 0.15, 'square', 0.15, 110); },
   stage() { const t = now(); [523, 659, 784, 1047].forEach((f, i) => audio.tone(f, t + i * 0.08, 0.14, 'triangle', 0.14)); },
   over() { const t = now(); [392, 330, 262, 196].forEach((f, i) => audio.tone(f, t + i * 0.16, 0.22, 'triangle', 0.16)); },
+  splash() { audio.noiseHit(now(), 0.16, 0.16, 2400, 'bandpass', 900); },
+  shoot() { audio.tone(740, now(), 0.09, 'triangle', 0.12, 1250); },
+  phase() { const t = now(); audio.tone(150, t, 0.4, 'sawtooth', 0.22, 70); audio.noiseHit(t, 0.35, 0.3, 500, 'lowpass', 120); },
+  bossDie() {
+    const t = now();
+    audio.noiseHit(t, 1.1, 0.6, 600, 'lowpass', 70);
+    [220, 165, 110, 82].forEach((f, i) => audio.tone(f, t + i * 0.12, 0.35, 'sawtooth', 0.2, f * 0.5));
+  },
   win() { const t = now(); [523, 659, 784, 1047, 1319].forEach((f, i) => audio.tone(f, t + i * 0.12, 0.25, 'triangle', 0.16)); },
 };
 
@@ -1209,3 +1618,32 @@ function toggleMute() {
   dom.muteBtn.textContent = audio.muted ? '♪ 소리 꺼짐' : '♪ 소리 켜짐';
   dom.muteBtn.classList.toggle('off', audio.muted);
 }
+
+// ---------- Debug / test hook (headless simulation) ----------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+window.__hwg = {
+  state, entities,
+  ready: () => !!(playerRig && assets.otter),
+  seed(s) { Math.random = mulberry32(s); },
+  newGame(mode = 'challenge', auto = true) {
+    state.mode = mode; state.auto = auto; state.motionFx = true;
+    dom.startScreen.hidden = true;
+    resetGame();
+  },
+  // advance the real simulation without rendering; stops at win / over
+  step(n = 1, dt = 1 / 60) {
+    for (let i = 0; i < n; i++) {
+      frame(dt);
+      if (state.phase === 'win' || state.phase === 'over') break;
+    }
+    return state.phase;
+  },
+  render() { renderer.render(scene, camera); },
+};
