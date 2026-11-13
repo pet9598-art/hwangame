@@ -69,7 +69,7 @@
   #stageBanner .st-name{font-size:1.2rem;font-weight:700;color:#ffe9c6;}
   #stageBanner .st-desc{font-size:.8rem;color:#bfe4d8;margin-top:4px;max-width:320px;}
 
-  #bossBar{position:absolute;top:16px;left:50%;transform:translateX(-50%);width:min(70vw,480px);
+  #bossBar{position:absolute;top:118px;left:50%;transform:translateX(-50%);width:min(70vw,480px);
     background:rgba(4,25,20,.6);border:1px solid rgba(196,67,46,.5);border-radius:10px;padding:8px 14px;
     opacity:0;transition:opacity .4s;pointer-events:none;}
   #bossBar.show{opacity:1;}
@@ -133,8 +133,12 @@
   .combo-badge{margin-top:6px;font-size:.78rem;font-weight:700;color:#04211c;background:#ffcf6e;border-radius:999px;
     padding:2px 10px;opacity:0;transition:opacity .2s;display:inline-block;}
   .combo-badge.show{opacity:1;}
-  #muteBtn{pointer-events:auto;margin-top:8px;font-size:.72rem;padding:4px 10px;}
+  #muteBtn,#pauseBtn{pointer-events:auto;margin-top:8px;font-size:.72rem;padding:4px 10px;}
   #muteBtn.off{opacity:.6;}
+  .auto-badge{margin:6px 0 0 6px;font-size:.72rem;font-weight:800;color:#04211c;background:#ff8a65;border-radius:999px;padding:2px 10px;}
+  #pauseScreen{background:rgba(3,15,12,.78);z-index:20;}
+  .best-line{font-size:.85rem;color:#ffe9c6;min-height:1.2em;margin:0;}
+  button.ghost:disabled{opacity:.45;cursor:default;}
   #stageBanner .st-fact{font-size:.82rem;color:#ffe9c6;margin-top:8px;max-width:340px;
     border-top:1px solid rgba(255,255,255,.18);padding-top:8px;}
 
@@ -168,7 +172,9 @@
         <div class="hud-label">이동 거리</div>
         <div class="hud-value"><span id="distVal">0</span>m</div>
         <div class="clam-count" style="justify-content:flex-end;"><span class="clam-dot"></span><span id="clamVal">0</span></div>
-        <div class="combo-badge" id="comboBadge"></div><br>
+        <div class="combo-badge" id="comboBadge"></div>
+        <span class="auto-badge" id="autoBadge" style="display:none">AUTO 테스트</span><br>
+        <button class="ghost" id="pauseBtn">❚❚ 일시정지</button>
         <button class="ghost" id="muteBtn">♪ 소리 켜짐</button>
       </div>
     </div>
@@ -191,11 +197,11 @@
 
   <!-- START -->
   <div class="overlay" id="startScreen">
-    <span class="title-badge">Prototype · v0.2</span>
+    <span class="title-badge">Prototype · v0.3</span>
     <h1>황룡강 수달 헤엄 러너</h1>
     <p class="lead">입암산 발원지에서 영산강까지, 강물을 따라 헤엄치며 장애물을 피하세요. 조개를 모아 쓰레기와 보스를 공격할 수 있어요!</p>
     <div class="controls-grid">
-      <div class="ctrl-card"><b>PC 키보드</b>← → / A D : 좌우 이동<br>↑ / W / Space : 점프<br>↓ / S : 잠수(슬라이딩)<br>F : 공격(조개 소모)<br>M : 소리 켜기/끄기</div>
+      <div class="ctrl-card"><b>PC 키보드</b>← → / A D : 좌우 이동<br>↑ / W / Space : 점프<br>↓ / S : 잠수(슬라이딩) · 점프 중에도 가능<br>F : 공격(조개 소모)<br>M : 소리 켜기/끄기</div>
       <div class="ctrl-card"><b>게임패드</b>D패드·스틱 : 이동<br>A : 점프 &nbsp; B : 잠수<br>X / RB : 공격<br><span id="padStatus">연결된 패드 없음</span></div>
     </div>
     <div class="mode-select">
@@ -203,7 +209,20 @@
       <button class="mode-btn selected" data-mode="challenge"><b>도전!</b><span>하트 3개 · 흙탕물이 쫓아와요</span></button>
     </div>
     <label class="opt"><input type="checkbox" id="motionOpt" checked> 화면 흔들림·속도 효과 (어지러우면 끄세요)</label>
-    <button class="primary" id="startBtn">불러오는 중...</button>
+    <p class="best-line" id="bestStart"></p>
+    <div class="btn-row">
+      <button class="primary" id="startBtn">불러오는 중...</button>
+      <button class="ghost" id="autoBtn" disabled title="봇이 실제 규칙으로 처음부터 끝까지 플레이해요 (테스트·녹화용)">자동 플레이 (테스트)</button>
+    </div>
+    <p class="lead" style="font-size:.74rem;opacity:.8">P / Esc : 일시정지 &nbsp;·&nbsp; T : 자동 플레이 켜기/끄기 &nbsp;·&nbsp; 터치: 좌우·위·아래로 쓸어서 이동, 톡 치면 점프</p>
+  </div>
+
+  <!-- PAUSE -->
+  <div class="overlay" id="pauseScreen" hidden>
+    <span class="title-badge">Paused</span>
+    <h1>잠깐 쉬어가요</h1>
+    <p class="lead">숨을 고르고 준비되면 다시 헤엄쳐요. 다른 창으로 이동하면 자동으로 멈춰요.</p>
+    <div class="btn-row"><button class="primary" id="resumeBtn">계속하기</button><button class="ghost" id="homeBtnPause">처음 화면 (모드 바꾸기)</button></div>
   </div>
 
   <!-- WIN -->
@@ -213,6 +232,7 @@
     <p class="lead">쓰레기봉투 보스를 물리치고 황룡강의 끝까지 헤엄쳐 왔습니다. 실제 황룡강에는 멸종위기종인 수달이 살고 있어요 — 사람이 버린 쓰레기가 강 하류까지 흘러가지 않도록, 우리가 할 수 있는 작은 실천을 생각해봐요.</p>
     <div class="stat-list">
       <div class="stat-line"><span>최종 점수</span><b id="winScore">0</b></div>
+      <div class="stat-line"><span>내 최고 점수</span><b id="winBest">0</b></div>
       <div class="stat-line"><span>이동 거리</span><b id="winDist">0m</b></div>
       <div class="stat-line"><span>치운 쓰레기</span><b id="winTrash">0개</b></div>
     </div>
@@ -226,6 +246,7 @@
     <p class="lead" id="overReason">다시 도전해서 영산강 합류부까지 헤엄쳐 보세요.</p>
     <div class="stat-list">
       <div class="stat-line"><span>점수</span><b id="overScore">0</b></div>
+      <div class="stat-line"><span>내 최고 점수</span><b id="overBest">0</b></div>
       <div class="stat-line"><span>이동 거리</span><b id="overDist">0m</b></div>
     </div>
     <div class="btn-row"><button class="primary" id="restartBtnOver">다시 도전하기</button><button class="ghost" id="homeBtnOver">처음 화면 (모드 바꾸기)</button></div>
